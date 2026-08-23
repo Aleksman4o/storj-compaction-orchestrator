@@ -98,7 +98,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/* --clobber
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
   docker:
     runs-on: ubuntu-24.04
