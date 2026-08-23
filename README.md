@@ -40,8 +40,8 @@ CGO_ENABLED=1 go build -buildvcs=false -trimpath -o storj-compaction-orchestrato
 
 ## Автоматические сборки
 
-GitHub Actions запускает тесты при каждом push и pull request. После публикации
-GitHub Release workflow собирает и прикрепляет к нему архивы для:
+GitHub Actions запускает тесты при каждом push и pull request. После отправки
+тега `v*` release workflow собирает архивы для:
 
 - Linux AMD64 и ARM64;
 - Windows AMD64;
@@ -49,17 +49,32 @@ GitHub Release workflow собирает и прикрепляет к нему �
 
 Версия внутри бинарника берётся из тега релиза. Вместе с архивами публикуется
 `checksums.txt` с SHA-256. Архивы и файл контрольных сумм получают GitHub
-Artifact Attestation, связывающую их с исходным коммитом и workflow. Проверка:
+Artifact Attestation, связывающую их с исходным коммитом и workflow. Подписанный
+Sigstore bundle также прикладывается к релизу отдельным файлом.
+
+После загрузки всех файлов workflow публикует release. Для новых релизов
+включена неизменяемость: опубликованные assets нельзя заменить, а связанный тег
+нельзя передвинуть или удалить. Проверка всего релиза и отдельного файла:
 
 ```bash
-gh attestation verify storj-compaction-orchestrator-v0.6.2-linux-amd64.tar.gz \
+gh release verify v0.6.3 -R Aleksman4o/storj-compaction-orchestrator
+gh release verify-asset v0.6.3 storj-compaction-orchestrator-v0.6.3-linux-amd64.tar.gz \
   -R Aleksman4o/storj-compaction-orchestrator
 ```
 
-Например, публикация следующего релиза через CLI:
+Дополнительная проверка build-provenance конкретного файла:
 
 ```bash
-gh release create v0.6.2 --generate-notes
+gh attestation verify storj-compaction-orchestrator-v0.6.3-linux-amd64.tar.gz \
+  -R Aleksman4o/storj-compaction-orchestrator
+```
+
+Для публикации следующего релиза достаточно отправить новый тег. Сам GitHub
+Release вручную создавать не нужно:
+
+```bash
+git tag v0.6.3
+git push origin v0.6.3
 ```
 
 Тот же workflow публикует multi-architecture Docker image для AMD64 и ARM64:
@@ -71,13 +86,13 @@ docker run -d --name storj-compaction-orchestrator \
   ghcr.io/aleksman4o/storj-compaction-orchestrator:latest
 ```
 
-Версионный Docker-тег совпадает с тегом релиза, например `v0.6.2`.
+Версионный Docker-тег совпадает с тегом релиза, например `v0.6.3`.
 Образ также получает проверяемую attestation:
 
 ```bash
 gh auth token | docker login ghcr.io -u Aleksman4o --password-stdin
 gh attestation verify \
-  oci://ghcr.io/aleksman4o/storj-compaction-orchestrator:v0.6.2 \
+  oci://ghcr.io/aleksman4o/storj-compaction-orchestrator:v0.6.3 \
   -R Aleksman4o/storj-compaction-orchestrator
 ```
 

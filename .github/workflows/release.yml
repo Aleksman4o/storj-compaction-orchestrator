@@ -1,8 +1,9 @@
 name: Release binaries
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
@@ -51,7 +52,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p dist/package
@@ -97,14 +98,46 @@ jobs:
         working-directory: dist
         run: sha256sum *.tar.gz *.zip > checksums.txt
       - name: Attest release assets
+        id: attest
         uses: actions/attest@v4
         with:
           subject-path: dist/*
-      - name: Upload release assets
+      - name: Add attestation bundle to release assets
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          VERSION: ${{ github.ref_name }}
+        run: cp "$BUNDLE_PATH" "dist/storj-compaction-orchestrator-${VERSION}-attestation.sigstore.json"
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          TAG: ${{ github.ref_name }}
+          RELEASE_NOTES: |
+            ## Проверка подлинности
+
+            Все файлы собраны GitHub Actions и имеют криптографически подписанную Sigstore build-provenance attestation.
+
+            - [GitHub Attestation](${{ steps.attest.outputs.attestation-url }})
+            - `storj-compaction-orchestrator-${{ github.ref_name }}-attestation.sigstore.json` — bundle для независимой проверки
+
+            ```bash
+            gh release verify ${{ github.ref_name }} -R Aleksman4o/storj-compaction-orchestrator
+            gh release verify-asset ${{ github.ref_name }} <downloaded-file> -R Aleksman4o/storj-compaction-orchestrator
+            ```
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" == "false" ]]; then
+              echo "Release $TAG is already published"
+              exit 0
+            fi
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "$RELEASE_NOTES"
 
   docker:
     runs-on: ubuntu-24.04
@@ -128,8 +161,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ github.event.release.tag_name }}
-            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+            type=raw,value=${{ github.ref_name }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       - name: Build and publish multi-architecture image
         id: build
         uses: docker/build-push-action@v7
@@ -140,7 +173,7 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           annotations: ${{ steps.metadata.outputs.annotations }}
-          build-args: VERSION=${{ github.event.release.tag_name }}
+          build-args: VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
