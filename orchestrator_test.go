@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -170,6 +171,10 @@ func TestSettingsRedactAndPreserveAPIKey(t *testing.T) {
 }
 
 func TestDatabaseFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix file permission bits")
+	}
+
 	dir := t.TempDir() + "/private"
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	o, err := newOrchestrator(context.Background(), dir+"/orchestrator.db", log)
