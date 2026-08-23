@@ -48,7 +48,15 @@ GitHub Release workflow собирает и прикрепляет к нему �
 - macOS Intel и ARM64.
 
 Версия внутри бинарника берётся из тега релиза. Вместе с архивами публикуется
-`checksums.txt` с SHA-256. Например, публикация следующего релиза через CLI:
+`checksums.txt` с SHA-256. Архивы и файл контрольных сумм получают GitHub
+Artifact Attestation, связывающую их с исходным коммитом и workflow. Проверка:
+
+```bash
+gh attestation verify storj-compaction-orchestrator-v0.6.2-linux-amd64.tar.gz \
+  -R Aleksman4o/storj-compaction-orchestrator
+```
+
+Например, публикация следующего релиза через CLI:
 
 ```bash
 gh release create v0.6.2 --generate-notes
@@ -64,6 +72,14 @@ docker run -d --name storj-compaction-orchestrator \
 ```
 
 Версионный Docker-тег совпадает с тегом релиза, например `v0.6.2`.
+Образ также получает проверяемую attestation:
+
+```bash
+gh auth token | docker login ghcr.io -u Aleksman4o --password-stdin
+gh attestation verify \
+  oci://ghcr.io/aleksman4o/storj-compaction-orchestrator:v0.6.2 \
+  -R Aleksman4o/storj-compaction-orchestrator
+```
 
 Без параметров dashboard слушает все интерфейсы на порту `14008`:
 
