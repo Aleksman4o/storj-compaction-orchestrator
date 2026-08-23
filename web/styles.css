@@ -86,7 +86,8 @@ code { color: #a8b9d3; }
 .view-switch button.active { color: #d7e4fa; background: #263650; }
 .operations-table .table-scroll { max-height: min(65vh, 720px); overflow: auto; }
 .operations-table thead { position: sticky; top: 0; z-index: 2; }
-.operations-table td { padding-top: 10px; padding-bottom: 10px; }
+.operations-table th { padding-inline: 12px; }
+.operations-table td { padding: 10px 12px; }
 .operations-table tr.active-operation { background: #152035; }
 .operations-table tr.active-operation:hover { background: #182640; }
 .operation-disk { min-width: 125px; display: flex; align-items: center; gap: 9px; }
