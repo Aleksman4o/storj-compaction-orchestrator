@@ -1,0 +1,14 @@
+services:
+  compaction-orchestrator:
+    build: .
+    container_name: storj-compaction-orchestrator
+    restart: unless-stopped
+    ports:
+      - "14008:14008"
+    volumes:
+      - storj_compaction_data:/data
+    environment:
+      COMPACTION_ORCHESTRATOR_PASSWORD: ${COMPACTION_ORCHESTRATOR_PASSWORD:-orchestra}
+
+volumes:
+  storj_compaction_data:

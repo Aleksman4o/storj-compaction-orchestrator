@@ -1,0 +1,22 @@
+[Unit]
+Description=Storj Compaction Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=storj-compaction
+Group=storj-compaction
+StateDirectory=storj-compaction-orchestrator
+EnvironmentFile=-/etc/storj-compaction-orchestrator.env
+ExecStart=/usr/local/bin/storj-compaction-orchestrator --database /var/lib/storj-compaction-orchestrator/orchestrator.db
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/storj-compaction-orchestrator
+
+[Install]
+WantedBy=multi-user.target

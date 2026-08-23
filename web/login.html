@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Вход · Storj Compaction</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand login-brand">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div><strong>Storj</strong><small>Compaction control</small></div>
+    </div>
+    <div>
+      <p class="eyebrow">Доступ к оркестратору</p>
+      <h1>Введите пароль</h1>
+    </div>
+    <form id="login-form" class="login-form">
+      <label><span>Пароль</span><input id="login-password" type="password" autocomplete="current-password" autofocus required></label>
+      <button class="button primary" type="submit">Войти</button>
+      <p id="login-error" class="login-error" role="alert"></p>
+    </form>
+  </main>
+  <script src="/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Storj Compaction</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div><strong>Storj</strong><small>Compaction control</small></div>
+      </div>
+      <nav aria-label="Основная навигация">
+        <button class="nav-item active" data-view="dashboard">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg>
+          Обзор
+        </button>
+        <button class="nav-item" data-view="schedule">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v2h6V2h2v2h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V2Zm12 8H5v10h14V10ZM5 8h14V6H5v2Zm3 5h3v3H8v-3Z"/></svg>
+          Расписание
+        </button>
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.9 7.9 0 0 0 .1-1 7.9 7.9 0 0 0-.1-1l2.1-1.6-2-3.4-2.5 1a7.6 7.6 0 0 0-1.7-1L15 3.3h-4L10.6 6a7.6 7.6 0 0 0-1.7 1L6.5 6l-2 3.4L6.6 11a7.9 7.9 0 0 0-.1 1 7.9 7.9 0 0 0 .1 1l-2.1 1.6 2 3.4 2.5-1a7.6 7.6 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.6 7.6 0 0 0 1.7-1l2.5 1 2-3.4-2.3-1.6ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"/></svg>
+          Настройки
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="pulse"></span>
+        <span id="poll-status">Подключение…</span>
+      </div>
+    </aside>
+
+    <main>
+      <section id="dashboard-view" class="view active">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Управление нагрузкой</p>
+            <h1>Компакции</h1>
+            <p class="subtitle">По одной ноде на физический диск. Без одновременного переписывания логов.</p>
+          </div>
+          <button id="refresh" class="button secondary">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L13 11h8V3l-3.3 3.3Z"/></svg>
+            Обновить
+          </button>
+        </header>
+
+        <div id="empty-state" class="empty-state hidden">
+          <div class="empty-icon">01</div>
+          <h2>Добавьте первую группу диска</h2>
+          <p>Укажите адреса нод и multinode API keys. После этого здесь появятся текущее состояние, очереди и статистика.</p>
+          <button class="button primary" data-go-settings>Открыть настройки</button>
+        </div>
+
+        <div id="dashboard-content">
+          <div id="summary" class="summary-grid"></div>
+          <div class="section-heading">
+            <div><h2>Диски и очереди</h2><p>Единое состояние всех физических дисков. Активные операции автоматически поднимаются вверх.</p></div>
+            <div class="list-tools"><label class="compact-check"><input id="active-groups-only" type="checkbox"><span>Только активные</span></label><div class="view-switch"><button class="active" data-group-view="table">Таблица</button><button data-group-view="cards">Карточки</button></div><input id="group-search" type="search" placeholder="Найти диск или ноду"></div>
+          </div>
+          <div id="groups-table-card" class="table-card operations-table"><div class="table-scroll"><table>
+            <thead><tr>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="name">Диск <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="activity">Состояние <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="node">Текущая нода <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="satellite">Спутник <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="progress">Прогресс / ETA <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="queue">Очередь <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="reclaimable">Reclaimable <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="reclaimed">Reclaimed <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="rewritten">Rewritten <span>↕</span></button></th><th></th>
+            </tr></thead>
+            <tbody id="groups-table"></tbody>
+          </table></div></div>
+          <div id="groups" class="groups-grid hidden"></div>
+          <div id="groups-pager" class="pager hidden"></div>
+
+          <div class="section-heading compact"><div><h2>Ноды</h2><p>Актуальные показатели из <code>/api/sno/compaction</code>. Сортировка таблицы не меняет порядок очереди.</p></div><div class="list-tools"><select id="node-group-filter"><option value="">Все диски</option></select><input id="node-search" type="search" placeholder="Найти ноду"></div></div>
+          <div class="table-card"><div class="table-scroll"><table>
+            <thead><tr>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="name">Нода <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="group">Диск <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="status">Состояние <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="work">Текущая работа <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="reclaimable">Можно освободить <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="reclaimed">Reclaimed с запуска <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="rewritten">Rewritten с запуска <span>↕</span></button></th><th></th>
+            </tr></thead>
+            <tbody id="nodes-table"></tbody>
+          </table></div></div>
+          <div id="nodes-pager" class="pager"></div>
+
+          <div class="section-heading compact"><div><h2>История запусков</h2><p>Результаты очередей orchestrator сохраняются между перезапусками.</p></div></div>
+          <div class="table-card"><div class="table-scroll"><table>
+            <thead><tr>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="started">Запуск <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="trigger">Источник <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="group">Диск <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="state">Результат <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="nodes">Ноды <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="reclaimed">Освобождено <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="rewritten">Переписано <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="history" data-sort-key="duration">Длительность <span>↕</span></button></th>
+            </tr></thead>
+            <tbody id="history-table"></tbody>
+          </table></div></div>
+          <div id="history-pager" class="pager"></div>
+        </div>
+      </section>
+
+      <section id="schedule-view" class="view">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Автоматизация</p>
+            <h1>Расписание</h1>
+            <p class="subtitle">Запускайте очередь всего диска или отдельную ноду в выбранные дни.</p>
+          </div>
+          <button id="save-schedules" class="button primary">Сохранить расписание</button>
+        </header>
+
+        <article class="panel schedule-summary">
+          <div><h2>Часовой пояс</h2><p>Время всех правил интерпретируется в одном часовом поясе IANA.</p></div>
+          <label class="timezone-field"><span>Timezone</span><input id="schedule-timezone" value="UTC" placeholder="Europe/Moscow"></label>
+        </article>
+
+        <div class="section-heading compact">
+          <div><h2>Правила запуска</h2><p>Если диск занят или нода недоступна, запуск повторяется до конца назначенного дня.</p></div>
+          <div class="list-tools"><input id="schedule-search" type="search" placeholder="Найти правило"><button id="add-schedule" class="button secondary small">+ Добавить</button></div>
+        </div>
+        <div id="schedule-list" class="schedule-list"></div>
+        <div id="schedule-pager" class="pager"></div>
+      </section>
+
+      <section id="settings-view" class="view">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Конфигурация</p>
+            <h1>Настройки</h1>
+            <p class="subtitle">Объедините ноды, использующие один физический диск.</p>
+          </div>
+          <button id="save-settings" class="button primary">Сохранить изменения</button>
+        </header>
+
+        <div class="settings-layout">
+          <div class="settings-main">
+            <article class="panel disk-manager-panel">
+              <div class="panel-title"><div><h2>Физические диски</h2><p>В каждой группе одновременно работает не более одной full compaction.</p></div><div class="list-tools"><input id="settings-group-search" type="search" placeholder="Найти диск"><button id="add-group" class="button secondary small">+ Добавить диск</button></div></div>
+              <div class="disk-manager">
+                <div class="disk-directory"><div id="settings-groups" class="disk-selector-list"></div><div id="settings-groups-pager" class="pager"></div></div>
+                <div id="settings-disk-detail" class="disk-detail"></div>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-title"><div><h2>Все ноды</h2><p>Подробное редактирование адресов и ключей. Привязку удобнее менять в карточке диска выше.</p></div><div class="list-tools"><select id="settings-node-group-filter"><option value="">Все диски</option></select><input id="settings-node-search" type="search" placeholder="Найти ноду"><button id="add-node" class="button secondary small">+ Добавить ноду</button></div></div>
+              <div id="settings-nodes" class="node-edit-list"></div>
+              <div id="settings-nodes-pager" class="pager"></div>
+            </article>
+
+            <article class="panel poll-panel">
+              <div><h2>Обновление данных</h2><p>Интервал опроса нод. Во время активного запуска прогресс дополнительно проверяется каждые 2 секунды.</p></div>
+              <label class="short-field"><span>Интервал, секунд</span><input id="poll-interval" type="number" min="2" max="300"></label>
+            </article>
+          </div>
+
+          <aside class="help-card">
+            <div class="help-icon">i</div>
+            <h2>Как получить multinode key</h2>
+            <p>Ключ создаётся самой нодой и записывается в её базу. Для Docker:</p>
+            <div class="code-block"><code>docker exec -it &lt;container&gt; /app/bin/storagenode issue-apikey --config-dir /app/config --identity-dir /app/identity</code><button class="copy" data-copy="docker exec -it &lt;container&gt; /app/bin/storagenode issue-apikey --config-dir /app/config --identity-dir /app/identity">Копировать</button></div>
+            <p>Для установленного бинарника:</p>
+            <div class="code-block"><code>storagenode issue-apikey --config-dir &lt;config-dir&gt; --identity-dir &lt;identity-dir&gt;</code><button class="copy" data-copy="storagenode issue-apikey --config-dir &lt;config-dir&gt; --identity-dir &lt;identity-dir&gt;">Копировать</button></div>
+            <div class="notice"><strong>Важно</strong><span>На ноде должен быть включён <code>hashstore.compaction.manual-log-compaction: true</code>. Dashboard-порт должен быть доступен серверу orchestrator.</span></div>
+            <div class="notice secure"><strong>О ключах</strong><span>Ключи хранятся только на backend в <code>orchestrator.db</code> с правами 0600 и никогда не возвращаются браузеру.</span></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
