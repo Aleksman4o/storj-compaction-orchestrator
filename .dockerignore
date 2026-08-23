@@ -1,0 +1,5 @@
+.git
+.github
+orchestrator.db*
+master.db*
+storj-compaction-orchestrator
