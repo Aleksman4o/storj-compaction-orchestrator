@@ -68,7 +68,7 @@
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="node">Текущая нода <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="satellite">Спутник <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="progress">Прогресс / осталось <span>↕</span></button></th>
-              <th><button class="sort-button" data-sort-table="groups" data-sort-key="queue">Очередь <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="groups" data-sort-key="queue">Готово <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="reclaimable">К очистке <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="reclaimed">Очищено <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="groups" data-sort-key="rewritten">Переписано <span>↕</span></button></th><th></th>
@@ -87,7 +87,8 @@
               <th><button class="sort-button" data-sort-table="nodes" data-sort-key="work">Текущая работа <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="nodes" data-sort-key="reclaimable">К очистке <span>↕</span></button></th>
               <th><button class="sort-button" data-sort-table="nodes" data-sort-key="reclaimed">Очищено с запуска <span>↕</span></button></th>
-              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="rewritten">Переписано с запуска <span>↕</span></button></th><th></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="rewritten">Переписано с запуска <span>↕</span></button></th>
+              <th><button class="sort-button" data-sort-table="nodes" data-sort-key="rate">Скорость <span>↕</span></button></th><th></th>
             </tr></thead>
             <tbody id="nodes-table"></tbody>
           </table></div></div>
@@ -116,7 +117,7 @@
           <div>
             <p class="eyebrow">Автоматизация</p>
             <h1>Расписание</h1>
-            <p class="subtitle">Запускайте очередь всего диска или отдельную ноду в выбранные дни.</p>
+            <p class="subtitle">Запускайте очередь всего диска или отдельную ноду по дням недели либо через заданный интервал.</p>
           </div>
           <button id="save-schedules" class="button primary">Сохранить расписание</button>
         </header>
@@ -127,11 +128,12 @@
         </article>
 
         <div class="section-heading compact">
-          <div><h2>Правила запуска</h2><p>Если диск занят или нода недоступна, запуск повторяется до конца назначенного дня.</p></div>
-          <div class="list-tools"><input id="schedule-search" type="search" placeholder="Найти правило"><button id="add-schedule" class="button secondary small">+ Добавить</button></div>
+          <div><h2>Ближайшие 7 дней</h2><p>Сверху — даты, слева — время. В ячейках указаны названия расписаний, рассчитанных на весь период.</p></div>
+          <button id="add-schedule" class="button secondary small">+ Новое правило</button>
         </div>
+        <div id="schedule-timeline"></div>
+        <div class="section-heading compact schedule-editor-heading"><div><h2>Редактор правила</h2><p>Открыт только выбранный элемент, поэтому обзор остаётся компактным.</p></div></div>
         <div id="schedule-list" class="schedule-list"></div>
-        <div id="schedule-pager" class="pager"></div>
       </section>
 
       <section id="settings-view" class="view">
@@ -149,20 +151,27 @@
             <article class="panel disk-manager-panel">
               <div class="panel-title"><div><h2>Физические диски</h2><p>В каждой группе одновременно работает не более одной full compaction.</p></div><div class="list-tools"><input id="settings-group-search" type="search" placeholder="Найти диск"><button id="add-group" class="button secondary small">+ Добавить диск</button></div></div>
               <div class="disk-manager">
-                <div class="disk-directory"><div id="settings-groups" class="disk-selector-list"></div><div id="settings-groups-pager" class="pager"></div></div>
+                <div class="disk-directory"><div id="settings-groups" class="disk-selector-list"></div></div>
                 <div id="settings-disk-detail" class="disk-detail"></div>
               </div>
             </article>
 
             <article class="panel">
               <div class="panel-title"><div><h2>Все ноды</h2><p>Подробное редактирование адресов и ключей. Привязку удобнее менять в карточке диска выше.</p></div><div class="list-tools"><select id="settings-node-group-filter"><option value="">Все диски</option></select><input id="settings-node-search" type="search" placeholder="Найти ноду"><button id="add-node" class="button secondary small">+ Добавить ноду</button></div></div>
-              <div id="settings-nodes" class="node-edit-list"></div>
-              <div id="settings-nodes-pager" class="pager"></div>
+              <div class="settings-node-header">
+                <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="name">Название <span>↕</span></button>
+                <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="url">Адрес dashboard <span>↕</span></button>
+                <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="group">Физический диск <span>↕</span></button>
+                <span>Multinode API key</span>
+                <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="enabled">Включена <span>↕</span></button>
+                <span></span>
+              </div>
+              <div id="settings-nodes" class="node-edit-list settings-scroll-list"></div>
             </article>
 
             <article class="panel poll-panel">
               <div><h2>Обновление данных</h2><p>Интервал опроса нод. Во время активного запуска прогресс дополнительно проверяется каждые 2 секунды.</p></div>
-              <label class="short-field"><span>Интервал, секунд</span><input id="poll-interval" type="number" min="2" max="300"></label>
+              <div class="preference-fields"><label class="short-field"><span>Интервал, секунд</span><input id="poll-interval" type="number" min="2" max="300"></label><label class="short-field"><span>Язык интерфейса</span><select id="ui-language"><option value="ru">Русский</option><option value="en">English</option></select></label></div>
             </article>
           </div>
 
@@ -181,6 +190,7 @@
     </main>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>
