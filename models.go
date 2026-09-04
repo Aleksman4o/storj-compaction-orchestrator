@@ -36,8 +36,11 @@ type scheduleRule struct {
 	Enabled    bool   `json:"enabled"`
 	TargetType string `json:"targetType"`
 	TargetID   string `json:"targetId"`
+	Mode       string `json:"mode"`
 	Days       []int  `json:"days"`
 	At         string `json:"at"`
+	StartAt    string `json:"startAt,omitempty"`
+	Interval   int    `json:"intervalHours,omitempty"`
 }
 
 type scheduleRunState struct {
@@ -49,13 +52,14 @@ type scheduleRunState struct {
 }
 
 type scheduleStatus struct {
-	RuleID        string     `json:"ruleId"`
-	Pending       bool       `json:"pending"`
-	NextRun       *time.Time `json:"nextRun,omitempty"`
-	LastAttemptAt *time.Time `json:"lastAttemptAt,omitempty"`
-	LastStartedAt *time.Time `json:"lastStartedAt,omitempty"`
-	LastJobID     string     `json:"lastJobId,omitempty"`
-	LastError     string     `json:"lastError,omitempty"`
+	RuleID        string      `json:"ruleId"`
+	Pending       bool        `json:"pending"`
+	NextRun       *time.Time  `json:"nextRun,omitempty"`
+	NextRuns      []time.Time `json:"nextRuns,omitempty"`
+	LastAttemptAt *time.Time  `json:"lastAttemptAt,omitempty"`
+	LastStartedAt *time.Time  `json:"lastStartedAt,omitempty"`
+	LastJobID     string      `json:"lastJobId,omitempty"`
+	LastError     string      `json:"lastError,omitempty"`
 }
 
 type compactionTotals struct {

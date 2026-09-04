@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,11 +49,12 @@ type mockNode struct {
 	delay   time.Duration
 	starts  atomic.Int64
 
-	mu        sync.Mutex
-	running   bool
-	jobID     uint64
-	startedAt time.Time
-	totals    compactionTotals
+	mu         sync.Mutex
+	running    bool
+	compacting bool
+	jobID      uint64
+	startedAt  time.Time
+	totals     compactionTotals
 }
 
 func newMockNode(t *testing.T, tracker *activeTracker, delay time.Duration) *mockNode {
@@ -68,7 +70,7 @@ func (n *mockNode) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/sno/compaction":
 		n.mu.Lock()
 		info := compactionInfo{
-			Compacting:                 n.running,
+			Compacting:                 n.running || n.compacting,
 			ManualLogCompactionEnabled: true,
 			ManualJob: manualCompactionJob{
 				ID: n.jobID, State: "idle", TotalSatellites: 1,
@@ -167,6 +169,108 @@ func TestSettingsRedactAndPreserveAPIKey(t *testing.T) {
 	o.mu.RUnlock()
 	if stored != testKey() {
 		t.Fatal("blank update did not preserve the stored key")
+	}
+}
+
+func TestSettingsCanBeChangedWhileQueueIsRunning(t *testing.T) {
+	o := newTestOrchestrator(t)
+	input := publicSettings{
+		PollIntervalSeconds: 10,
+		Timezone:            "UTC",
+		Groups:              []diskGroup{{ID: "disk-a", Name: "Disk A"}},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: "http://127.0.0.1:14002",
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+	}
+	if err := o.updateSettings(input); err != nil {
+		t.Fatal(err)
+	}
+
+	o.mu.Lock()
+	o.state.Jobs = append(o.state.Jobs, jobRecord{
+		ID: "running-job", GroupID: "disk-a", GroupName: "Disk A", State: "running", StartedAt: time.Now().UTC(),
+		Nodes: []nodeRunRecord{{NodeID: "node-a", NodeName: "Node A", State: "queued"}},
+	})
+	o.running["disk-a"] = "running-job"
+	o.mu.Unlock()
+
+	updated := o.publicSettings()
+	updated.PollIntervalSeconds = 20
+	updated.Timezone = "Europe/Moscow"
+	updated.Groups[0].Name = "Changed Disk"
+	updated.Nodes[0].Name = "Changed Node"
+	updated.Nodes[0].URL = "http://127.0.0.1:14003"
+	updated.Schedules = []scheduleRule{{
+		ID: "every-72h", Name: "Every 72 hours", Enabled: true, Mode: scheduleModeInterval, TargetType: "group",
+		TargetID: "disk-a", StartAt: "2026-08-26T02:00", Interval: 72,
+	}}
+	if err := o.updateSettings(updated); err != nil {
+		t.Fatalf("settings update was rejected: %v", err)
+	}
+
+	current := o.publicSettings()
+	if current.PollIntervalSeconds != 20 || current.Timezone != "Europe/Moscow" || current.Groups[0].Name != "Changed Disk" ||
+		current.Nodes[0].Name != "Changed Node" || current.Nodes[0].URL != "http://127.0.0.1:14003" ||
+		len(current.Schedules) != 1 || current.Schedules[0].ID != "every-72h" || current.Schedules[0].Interval != 72 {
+		t.Fatalf("settings update was not stored: %+v", current)
+	}
+
+	current.Nodes = nil
+	if err := o.updateSettings(current); err == nil {
+		t.Fatal("active queue node removal was accepted")
+	}
+}
+
+func TestRunningQueueSurvivesDiskReassignmentAndKeepsNodeReserved(t *testing.T) {
+	o := newTestOrchestrator(t)
+	if err := o.updateSettings(publicSettings{
+		PollIntervalSeconds: 10,
+		Timezone:            "UTC",
+		Groups: []diskGroup{
+			{ID: "disk-a", Name: "Disk A"},
+			{ID: "disk-b", Name: "Disk B"},
+		},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: "http://127.0.0.1:14002",
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	o.mu.Lock()
+	o.state.Jobs = append(o.state.Jobs, jobRecord{
+		ID: "running-job", GroupID: "disk-a", GroupName: "Disk A", State: "running", StartedAt: time.Now().UTC(),
+		Nodes: []nodeRunRecord{{NodeID: "node-a", NodeName: "Node A", State: "queued"}},
+	})
+	o.running["disk-a"] = "running-job"
+	o.mu.Unlock()
+
+	updated := o.publicSettings()
+	updated.Groups = updated.Groups[1:]
+	updated.Nodes[0].GroupID = "disk-b"
+	if err := o.updateSettings(updated); err != nil {
+		t.Fatalf("disk reassignment was rejected: %v", err)
+	}
+
+	dashboard := o.dashboard()
+	var foundOldGroup, nodeKeptWithRunningQueue bool
+	for _, group := range dashboard.Groups {
+		if group.ID == "disk-a" && group.RunningJob != nil && group.RunningJob.ID == "running-job" {
+			foundOldGroup = true
+		}
+	}
+	for _, node := range dashboard.Nodes {
+		if node.ID == "node-a" && node.GroupID == "disk-a" {
+			nodeKeptWithRunningQueue = true
+		}
+	}
+	if !foundOldGroup || !nodeKeptWithRunningQueue {
+		t.Fatalf("running queue disappeared after settings update: groups=%+v nodes=%+v", dashboard.Groups, dashboard.Nodes)
+	}
+	if _, err := o.startGroup("disk-b", ""); !errors.Is(err, errConflict) {
+		t.Fatalf("reassigned active node was not reserved: %v", err)
 	}
 }
 
@@ -481,6 +585,30 @@ func TestDifferentDiskGroupsCanRunInParallel(t *testing.T) {
 	}
 }
 
+func TestSingleNodeJobHasDistinctTrigger(t *testing.T) {
+	tracker := &activeTracker{}
+	node := newMockNode(t, tracker, 20*time.Millisecond)
+	o := newTestOrchestrator(t)
+	if err := o.updateSettings(publicSettings{
+		PollIntervalSeconds: 10,
+		Groups:              []diskGroup{{ID: "disk-a", Name: "Disk A"}},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: node.server.URL,
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	job, err := o.startSingleNode("node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Trigger != "manual-node" {
+		t.Fatalf("unexpected single-node trigger %q", job.Trigger)
+	}
+	waitForJob(t, o, job.ID)
+}
+
 func TestScheduledGroupStartsOnceForOccurrence(t *testing.T) {
 	tracker := &activeTracker{}
 	node := newMockNode(t, tracker, 20*time.Millisecond)
@@ -495,7 +623,7 @@ func TestScheduledGroupStartsOnceForOccurrence(t *testing.T) {
 			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
 		}},
 		Schedules: []scheduleRule{{
-			ID: "nightly", Name: "Nightly", Enabled: true, TargetType: "group",
+			ID: "nightly", Name: "Nightly", Enabled: true, Mode: scheduleModeWeekly, TargetType: "group",
 			TargetID: "disk-a", Days: []int{int(fixed.Weekday())}, At: "11:00",
 		}},
 	}); err != nil {
@@ -521,6 +649,170 @@ func TestScheduledGroupStartsOnceForOccurrence(t *testing.T) {
 	}
 }
 
+func TestScheduledOccurrenceIsSkippedWhenOrchestratorOwnsDisk(t *testing.T) {
+	o := newTestOrchestrator(t)
+	fixed := futureScheduleTestTime()
+	if err := o.updateSettings(publicSettings{
+		PollIntervalSeconds: 10,
+		Timezone:            "UTC",
+		Groups:              []diskGroup{{ID: "disk-a", Name: "Disk A"}},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: "http://127.0.0.1:14002",
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+		Schedules: []scheduleRule{{
+			ID: "nightly", Name: "Nightly", Enabled: true, Mode: scheduleModeWeekly, TargetType: "group",
+			TargetID: "disk-a", Days: []int{int(fixed.Weekday())}, At: "11:00",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	o.mu.Lock()
+	o.running["disk-a"] = "manual-job"
+	o.state.Jobs = append(o.state.Jobs, jobRecord{
+		ID: "manual-job", GroupID: "disk-a", State: "running", Trigger: "manual",
+	})
+	o.mu.Unlock()
+	o.processSchedules(fixed)
+
+	o.mu.RLock()
+	runState := o.state.ScheduleState["nightly"]
+	jobs := len(o.state.Jobs)
+	o.mu.RUnlock()
+	if runState.LastDueKey != fixed.Format("2006-01-02")+"|11:00" || runState.LastAttemptAt == nil || runState.LastError != "" {
+		t.Fatalf("busy orchestrator occurrence was not consumed cleanly: %+v", runState)
+	}
+	if jobs != 1 {
+		t.Fatalf("busy orchestrator occurrence changed the job count to %d", jobs)
+	}
+	o.mu.RLock()
+	rule := cloneSchedule(o.state.Settings.Schedules[0])
+	o.mu.RUnlock()
+	if due, _, _ := scheduleOccurrence(rule, runState, fixed.Add(time.Hour), time.UTC); due {
+		t.Fatal("skipped occurrence became due again after the disk was released")
+	}
+}
+
+func TestScheduledOccurrenceWaitsForOrchestratedSingleNodeJob(t *testing.T) {
+	o := newTestOrchestrator(t)
+	fixed := futureScheduleTestTime()
+	if err := o.updateSettings(publicSettings{
+		PollIntervalSeconds: 10,
+		Timezone:            "UTC",
+		Groups:              []diskGroup{{ID: "disk-a", Name: "Disk A"}},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: "http://127.0.0.1:14002",
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+		Schedules: []scheduleRule{{
+			ID: "nightly", Name: "Nightly", Enabled: true, Mode: scheduleModeWeekly, TargetType: "group",
+			TargetID: "disk-a", Days: []int{int(fixed.Weekday())}, At: "11:00",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	o.mu.Lock()
+	o.running["disk-a"] = "single-node-job"
+	o.state.Jobs = append(o.state.Jobs, jobRecord{
+		ID: "single-node-job", GroupID: "disk-a", State: "running", Trigger: "manual-node",
+	})
+	o.mu.Unlock()
+	o.processSchedules(fixed)
+
+	o.mu.RLock()
+	runState := o.state.ScheduleState["nightly"]
+	rule := cloneSchedule(o.state.Settings.Schedules[0])
+	jobs := len(o.state.Jobs)
+	o.mu.RUnlock()
+	if runState.LastDueKey != "" || runState.LastAttemptAt != nil || runState.LastError != "" {
+		t.Fatalf("single-node job consumed the scheduled occurrence: %+v", runState)
+	}
+	if jobs != 1 {
+		t.Fatalf("single-node wait changed the job count to %d", jobs)
+	}
+	if due, _, _ := scheduleOccurrence(rule, runState, fixed.Add(time.Hour), time.UTC); !due {
+		t.Fatal("scheduled occurrence did not remain due behind a single-node job")
+	}
+}
+
+func TestScheduledOccurrenceWaitsForNodeSideCompaction(t *testing.T) {
+	tracker := &activeTracker{}
+	node := newMockNode(t, tracker, 20*time.Millisecond)
+	o := newTestOrchestrator(t)
+	fixed := futureScheduleTestTime()
+	if err := o.updateSettings(publicSettings{
+		PollIntervalSeconds: 10,
+		Timezone:            "UTC",
+		Groups:              []diskGroup{{ID: "disk-a", Name: "Disk A"}},
+		Nodes: []publicNodeConfig{{
+			ID: "node-a", Name: "Node A", URL: node.server.URL,
+			APIKey: testKey(), GroupID: "disk-a", Enabled: true,
+		}},
+		Schedules: []scheduleRule{{
+			ID: "nightly", Name: "Nightly", Enabled: true, Mode: scheduleModeWeekly, TargetType: "group",
+			TargetID: "disk-a", Days: []int{int(fixed.Weekday())}, At: "11:00",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	node.mu.Lock()
+	node.compacting = true
+	node.mu.Unlock()
+	o.processSchedules(fixed)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		o.mu.RLock()
+		runState := o.state.ScheduleState["nightly"]
+		jobs := len(o.state.Jobs)
+		o.mu.RUnlock()
+		if runState.LastError != "" {
+			if runState.LastDueKey != "" || jobs != 0 {
+				t.Fatalf("node-side compaction consumed or started occurrence: state=%+v jobs=%d", runState, jobs)
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	o.mu.RLock()
+	deferred := o.state.ScheduleState["nightly"]
+	o.mu.RUnlock()
+	if deferred.LastError == "" {
+		t.Fatal("timed out waiting for node-side compaction deferral")
+	}
+
+	node.mu.Lock()
+	node.compacting = false
+	node.mu.Unlock()
+	o.processSchedules(fixed.Add(2 * time.Minute))
+	deadline = time.Now().Add(2 * time.Second)
+	var job jobRecord
+	for time.Now().Before(deadline) {
+		o.mu.RLock()
+		if len(o.state.Jobs) > 0 {
+			job = cloneJob(o.state.Jobs[len(o.state.Jobs)-1])
+			o.mu.RUnlock()
+			break
+		}
+		o.mu.RUnlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if job.ID == "" {
+		o.mu.RLock()
+		runState := o.state.ScheduleState["nightly"]
+		running := o.running["disk-a"]
+		o.mu.RUnlock()
+		t.Fatalf("timed out waiting for deferred job: schedule=%+v running=%q starts=%d", runState, running, node.starts.Load())
+	}
+	finished := waitForJob(t, o, job.ID)
+	if finished.State != "succeeded" || node.starts.Load() != 1 {
+		t.Fatalf("deferred occurrence did not run after node became idle: job=%+v starts=%d", finished, node.starts.Load())
+	}
+}
+
 func TestScheduledNodeRunsOnlyTargetAndChecksDiskPeers(t *testing.T) {
 	tracker := &activeTracker{}
 	nodeA := newMockNode(t, tracker, 20*time.Millisecond)
@@ -536,7 +828,7 @@ func TestScheduledNodeRunsOnlyTargetAndChecksDiskPeers(t *testing.T) {
 			{ID: "node-b", Name: "Node B", URL: nodeB.server.URL, APIKey: testKey(), GroupID: "disk-a", Enabled: true},
 		},
 		Schedules: []scheduleRule{{
-			ID: "one-node", Name: "One node", Enabled: true, TargetType: "node",
+			ID: "one-node", Name: "One node", Enabled: true, Mode: scheduleModeWeekly, TargetType: "node",
 			TargetID: "node-b", Days: []int{int(fixed.Weekday())}, At: "11:00",
 		}},
 	}); err != nil {
@@ -545,6 +837,9 @@ func TestScheduledNodeRunsOnlyTargetAndChecksDiskPeers(t *testing.T) {
 	o.processSchedules(fixed)
 	job := waitForStartedJob(t, o)
 	finished := waitForJob(t, o, job.ID)
+	if finished.Trigger != "schedule-node" {
+		t.Fatalf("unexpected scheduled single-node trigger %q", finished.Trigger)
+	}
 	if len(finished.Nodes) != 1 || finished.Nodes[0].NodeID != "node-b" {
 		t.Fatalf("unexpected scheduled node queue: %+v", finished.Nodes)
 	}
@@ -568,7 +863,7 @@ func TestScheduledNodeIsNotConsumedWhenDiskPeerIsUnavailable(t *testing.T) {
 			{ID: "node-b", Name: "Node B", URL: nodeB.server.URL, APIKey: testKey(), GroupID: "disk-a", Enabled: true},
 		},
 		Schedules: []scheduleRule{{
-			ID: "blocked", Name: "Blocked", Enabled: true, TargetType: "node",
+			ID: "blocked", Name: "Blocked", Enabled: true, Mode: scheduleModeWeekly, TargetType: "node",
 			TargetID: "node-a", Days: []int{int(fixed.Weekday())}, At: "11:00",
 		}},
 	}); err != nil {
@@ -600,7 +895,7 @@ func TestScheduleOccurrenceUsesConfiguredTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := scheduleRule{Days: []int{1}, At: "02:00"}
+	rule := scheduleRule{Mode: scheduleModeWeekly, Days: []int{1}, At: "02:00"}
 	before := time.Date(2026, time.August, 23, 22, 59, 0, 0, time.UTC) // Monday 01:59 in Moscow.
 	if due, _, _ := scheduleOccurrence(rule, scheduleRunState{}, before, location); due {
 		t.Fatal("schedule became due before configured local time")
@@ -610,6 +905,110 @@ func TestScheduleOccurrenceUsesConfiguredTimezone(t *testing.T) {
 	if !due || key != "2026-08-24|02:00" {
 		t.Fatalf("unexpected local occurrence: due=%v key=%q", due, key)
 	}
+}
+
+func TestIntervalScheduleUsesFixed48HourOccurrences(t *testing.T) {
+	location, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := scheduleRule{
+		Mode: scheduleModeInterval, StartAt: "2026-08-25T10:00", Interval: 48,
+	}
+	start := time.Date(2026, time.August, 25, 7, 0, 0, 0, time.UTC)
+
+	if due, _, _ := scheduleOccurrence(rule, scheduleRunState{}, start.Add(-time.Second), location); due {
+		t.Fatal("interval became due before its anchor")
+	}
+	if next, pending := nextScheduleOccurrence(rule, scheduleRunState{}, start.Add(-time.Second), location); pending || !next.Equal(start) {
+		t.Fatalf("unexpected first interval occurrence: next=%s pending=%t", next, pending)
+	}
+
+	due, key, scheduled := scheduleOccurrence(rule, scheduleRunState{}, start.Add(47*time.Hour), location)
+	if !due || !scheduled.Equal(start) || key != "interval:2026-08-25T07:00:00Z" {
+		t.Fatalf("unexpected current interval: due=%t key=%q scheduled=%s", due, key, scheduled)
+	}
+	consumed := scheduleRunState{LastDueKey: key}
+	if due, _, _ := scheduleOccurrence(rule, consumed, start.Add(47*time.Hour), location); due {
+		t.Fatal("consumed interval became due twice")
+	}
+	if next, pending := nextScheduleOccurrence(rule, consumed, start.Add(47*time.Hour), location); pending || !next.Equal(start.Add(48*time.Hour)) {
+		t.Fatalf("unexpected second interval occurrence: next=%s pending=%t", next, pending)
+	}
+
+	due, secondKey, second := scheduleOccurrence(rule, consumed, start.Add(48*time.Hour), location)
+	if !due || !second.Equal(start.Add(48*time.Hour)) || secondKey == key {
+		t.Fatalf("48-hour occurrence did not advance: due=%t key=%q scheduled=%s", due, secondKey, second)
+	}
+}
+
+func TestIntervalScheduleDoesNotDriftAcrossDST(t *testing.T) {
+	location, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := scheduleRule{
+		Mode: scheduleModeInterval, StartAt: "2026-10-24T12:00", Interval: 48,
+	}
+	start, _, ok := parseIntervalSchedule(rule, location)
+	if !ok {
+		t.Fatal("valid interval was rejected")
+	}
+	_, key, second := scheduleOccurrence(rule, scheduleRunState{LastDueKey: "interval:" + start.UTC().Format(time.RFC3339)}, start.Add(48*time.Hour), location)
+	if second.Sub(start) != 48*time.Hour || second.In(location).Hour() != 11 {
+		t.Fatalf("interval followed wall-clock days instead of 48 hours: key=%q second=%s", key, second.In(location))
+	}
+}
+
+func TestScheduleOccurrencesCoverSevenLocalCalendarDays(t *testing.T) {
+	location, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.August, 25, 8, 30, 0, 0, time.UTC) // 11:30 in Moscow.
+	rule := scheduleRule{Mode: scheduleModeWeekly, Days: []int{0, 1, 2, 3, 4, 5, 6}, At: "12:00"}
+	occurrences := scheduleOccurrences(rule, scheduleRunState{}, now, location)
+	if len(occurrences) != scheduleDisplayDays {
+		t.Fatalf("expected %d daily occurrences, got %d: %v", scheduleDisplayDays, len(occurrences), occurrences)
+	}
+	for index, occurrence := range occurrences {
+		local := occurrence.In(location)
+		if local.Hour() != 12 || local.Minute() != 0 || local.Day() != 25+index {
+			t.Fatalf("unexpected occurrence %d: %s", index, local)
+		}
+	}
+}
+
+func TestScheduleOccurrencesSkipConsumedWeeklyOccurrence(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC)
+	rule := scheduleRule{Mode: scheduleModeWeekly, Days: []int{0, 1, 2, 3, 4, 5, 6}, At: "12:00"}
+	occurrences := scheduleOccurrences(rule, scheduleRunState{LastDueKey: "2026-08-25|12:00"}, now, time.UTC)
+	if len(occurrences) != scheduleDisplayDays-1 || occurrences[0].Day() != 26 {
+		t.Fatalf("consumed occurrence was not skipped: %v", occurrences)
+	}
+}
+
+func TestIntervalScheduleOccurrencesKeepElapsedHourCadence(t *testing.T) {
+	location, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.August, 25, 8, 0, 0, 0, time.UTC)
+	rule := scheduleRule{Mode: scheduleModeInterval, StartAt: "2026-08-24T12:00", Interval: 48}
+	occurrences := scheduleOccurrences(rule, scheduleRunState{}, now, location)
+	want := []time.Time{
+		time.Date(2026, time.August, 26, 9, 0, 0, 0, time.UTC),
+		time.Date(2026, time.August, 28, 9, 0, 0, 0, time.UTC),
+		time.Date(2026, time.August, 30, 9, 0, 0, 0, time.UTC),
+	}
+	if !slices.Equal(occurrences, want) {
+		t.Fatalf("unexpected interval occurrences: got %v want %v", occurrences, want)
+	}
+}
+
+func futureScheduleTestTime() time.Time {
+	day := time.Now().UTC().AddDate(0, 0, 2)
+	return time.Date(day.Year(), day.Month(), day.Day(), 12, 0, 0, 0, time.UTC)
 }
 
 func waitForJob(t *testing.T, o *orchestrator, id string) jobRecord {

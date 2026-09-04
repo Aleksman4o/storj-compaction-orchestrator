@@ -1,10 +1,94 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSQLiteMigratesV1SchedulesWithoutLosingRules(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "orchestrator.db")
+	db, err := sql.Open("sqlite3", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE schedules (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		enabled INTEGER NOT NULL,
+		target_type TEXT NOT NULL,
+		target_id TEXT NOT NULL,
+		days_json TEXT NOT NULL,
+		at_time TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		last_due_key TEXT NOT NULL DEFAULT '',
+		last_attempt_at TEXT,
+		last_started_at TEXT,
+		last_job_id TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT ''
+	);
+	INSERT INTO schedules(id, name, enabled, target_type, target_id, days_json, at_time, position)
+		VALUES('nightly', 'Nightly', 1, 'group', 'disk-a', '[1,2,3,4,5]', '02:00', 0);
+	PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	store := &stateStore{db: db}
+	if err := store.migrateSchema(); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != databaseSchemaVersion {
+		t.Fatalf("schema version is %d, expected %d", version, databaseSchemaVersion)
+	}
+	var id, name, mode, startAt, at string
+	var interval int
+	if err := db.QueryRow(`SELECT id, name, schedule_mode, start_at, interval_hours, at_time FROM schedules`).
+		Scan(&id, &name, &mode, &startAt, &interval, &at); err != nil {
+		t.Fatal(err)
+	}
+	if id != "nightly" || name != "Nightly" || mode != scheduleModeWeekly || startAt != "" || interval != 0 || at != "02:00" {
+		t.Fatalf("migrated schedule changed: id=%q name=%q mode=%q start=%q interval=%d at=%q",
+			id, name, mode, startAt, interval, at)
+	}
+}
+
+func TestSQLitePersistsIntervalSchedule(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "orchestrator.db")
+	store, state, err := openStateStore(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Settings.Groups = []diskGroup{{ID: "disk-a", Name: "Disk A"}}
+	state.Settings.Schedules = []scheduleRule{{
+		ID: "every-48h", Name: "Every 48 hours", Enabled: true, TargetType: "group", TargetID: "disk-a",
+		Mode: scheduleModeInterval, StartAt: "2026-08-25T10:00", Interval: 48,
+	}}
+	state.ScheduleState["every-48h"] = scheduleRunState{LastDueKey: "interval:2026-08-25T07:00:00Z"}
+	if err := store.writeFullState(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, loaded, err := openStateStore(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if len(loaded.Settings.Schedules) != 1 {
+		t.Fatalf("loaded %d schedules", len(loaded.Settings.Schedules))
+	}
+	rule := loaded.Settings.Schedules[0]
+	if rule.Mode != scheduleModeInterval || rule.StartAt != "2026-08-25T10:00" || rule.Interval != 48 {
+		t.Fatalf("interval schedule changed after reload: %+v", rule)
+	}
+}
 
 func TestSQLiteInitializesAndPersistsState(t *testing.T) {
 	dir := t.TempDir()

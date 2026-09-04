@@ -237,26 +237,53 @@ func (o *orchestrator) dashboard() dashboardResponse {
 	}
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	now := time.Now().UTC()
 
 	result := dashboardResponse{
-		GeneratedAt: time.Now().UTC(),
+		GeneratedAt: now,
 		Groups:      make([]dashboardGroup, 0, len(o.state.Settings.Groups)),
 		Nodes:       make([]dashboardNode, 0, len(o.state.Settings.Nodes)),
 		Jobs:        make([]jobRecord, 0),
-		Schedules:   o.scheduleStatusesLocked(time.Now().UTC()),
+		Schedules:   o.scheduleStatusesLocked(now),
 		History:     history,
 	}
+	groupIDs := make(map[string]struct{}, len(o.state.Settings.Groups))
+	activeNodeGroups := make(map[string]string)
 	for _, group := range o.state.Settings.Groups {
+		groupIDs[group.ID] = struct{}{}
 		entry := dashboardGroup{diskGroup: group}
 		if jobID := o.running[group.ID]; jobID != "" {
 			if job := findJob(o.state.Jobs, jobID); job != nil {
 				copyJob := cloneJob(*job)
 				entry.RunningJob = &copyJob
+				for _, run := range job.Nodes {
+					activeNodeGroups[run.NodeID] = job.GroupID
+				}
 			}
 		}
 		result.Groups = append(result.Groups, entry)
 	}
+	for groupID, jobID := range o.running {
+		if _, exists := groupIDs[groupID]; exists {
+			continue
+		}
+		job := findJob(o.state.Jobs, jobID)
+		if job == nil {
+			continue
+		}
+		copyJob := cloneJob(*job)
+		result.Groups = append(result.Groups, dashboardGroup{
+			diskGroup:  diskGroup{ID: job.GroupID, Name: job.GroupName},
+			RunningJob: &copyJob,
+		})
+		for _, run := range job.Nodes {
+			activeNodeGroups[run.NodeID] = job.GroupID
+		}
+	}
 	for _, node := range o.state.Settings.Nodes {
+		if groupID, active := activeNodeGroups[node.ID]; active {
+			node.GroupID = groupID
+		}
 		result.Nodes = append(result.Nodes, dashboardNode{
 			publicNodeConfig: publicNode(node),
 			Runtime:          o.runtime[node.ID],
@@ -307,7 +334,8 @@ func (o *orchestrator) updateSettings(input publicSettings) error {
 	if input.Timezone == "" {
 		input.Timezone = "UTC"
 	}
-	if _, err := time.LoadLocation(input.Timezone); err != nil {
+	location, err := time.LoadLocation(input.Timezone)
+	if err != nil {
 		return fmt.Errorf("invalid IANA timezone %q", input.Timezone)
 	}
 	groups := make([]diskGroup, 0, len(input.Groups))
@@ -396,9 +424,6 @@ func (o *orchestrator) updateSettings(input publicSettings) error {
 		if rule.Name == "" {
 			return errors.New("every schedule needs a name")
 		}
-		if _, err := time.Parse("15:04", rule.At); err != nil {
-			return fmt.Errorf("schedule %q has invalid time %q", rule.Name, rule.At)
-		}
 		switch rule.TargetType {
 		case "group":
 			if _, ok := groupIDs[rule.TargetID]; !ok {
@@ -411,29 +436,57 @@ func (o *orchestrator) updateSettings(input publicSettings) error {
 		default:
 			return fmt.Errorf("schedule %q has invalid target type %q", rule.Name, rule.TargetType)
 		}
-		if len(rule.Days) == 0 {
-			return fmt.Errorf("schedule %q needs at least one weekday", rule.Name)
-		}
-		days := make(map[int]struct{}, len(rule.Days))
-		for _, day := range rule.Days {
-			if day < 0 || day > 6 {
-				return fmt.Errorf("schedule %q has invalid weekday %d", rule.Name, day)
+		switch rule.Mode {
+		case scheduleModeWeekly:
+			if _, err := time.Parse("15:04", rule.At); err != nil {
+				return fmt.Errorf("schedule %q has invalid time %q", rule.Name, rule.At)
 			}
-			days[day] = struct{}{}
-		}
-		rule.Days = rule.Days[:0]
-		for day := 0; day <= 6; day++ {
-			if _, ok := days[day]; ok {
-				rule.Days = append(rule.Days, day)
+			if len(rule.Days) == 0 {
+				return fmt.Errorf("schedule %q needs at least one weekday", rule.Name)
 			}
+			days := make(map[int]struct{}, len(rule.Days))
+			for _, day := range rule.Days {
+				if day < 0 || day > 6 {
+					return fmt.Errorf("schedule %q has invalid weekday %d", rule.Name, day)
+				}
+				days[day] = struct{}{}
+			}
+			rule.Days = rule.Days[:0]
+			for day := 0; day <= 6; day++ {
+				if _, ok := days[day]; ok {
+					rule.Days = append(rule.Days, day)
+				}
+			}
+			rule.StartAt = ""
+			rule.Interval = 0
+		case scheduleModeInterval:
+			start, err := time.ParseInLocation(scheduleStartLayout, rule.StartAt, location)
+			if err != nil || start.Format(scheduleStartLayout) != rule.StartAt {
+				return fmt.Errorf("schedule %q has invalid interval start %q", rule.Name, rule.StartAt)
+			}
+			if rule.Interval < 1 || rule.Interval > 24*365 {
+				return fmt.Errorf("schedule %q interval must be between 1 and 8760 hours", rule.Name)
+			}
+			rule.Days = nil
+			rule.At = ""
+		default:
+			return fmt.Errorf("schedule %q has invalid mode %q", rule.Name, rule.Mode)
 		}
 		schedules = append(schedules, cloneSchedule(rule))
 	}
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if len(o.running) != 0 {
-		return errors.New("settings cannot be changed while an orchestration job is running")
+	for _, jobID := range o.running {
+		job := findJob(o.state.Jobs, jobID)
+		if job == nil {
+			continue
+		}
+		for _, run := range job.Nodes {
+			if _, ok := nodeIDs[run.NodeID]; !ok {
+				return fmt.Errorf("node %q cannot be removed while an orchestration job still references it", run.NodeName)
+			}
+		}
 	}
 	proposed := o.state
 	proposed.Settings = settings{
@@ -494,10 +547,17 @@ func newID() string {
 }
 
 func (o *orchestrator) startGroup(groupID, onlyNodeID string) (jobRecord, error) {
-	return o.startGroupWithTrigger(groupID, onlyNodeID, "manual", "", "")
+	trigger := "manual"
+	if onlyNodeID != "" {
+		trigger = "manual-node"
+	}
+	return o.startGroupWithTrigger(groupID, onlyNodeID, trigger, "", "")
 }
 
 func (o *orchestrator) startGroupWithTrigger(groupID, onlyNodeID, trigger, scheduleID, scheduleDueKey string) (jobRecord, error) {
+	if onlyNodeID != "" && trigger == "schedule" {
+		trigger = "schedule-node"
+	}
 	o.mu.RLock()
 	group, allNodes, err := o.groupNodesLocked(groupID, "")
 	var nodes []nodeConfig
@@ -513,6 +573,9 @@ func (o *orchestrator) startGroupWithTrigger(groupID, onlyNodeID, trigger, sched
 			if len(nodes) == 0 {
 				err = errNotFound
 			}
+		}
+		if err == nil {
+			err = o.ensureNodesAvailableLocked(groupID, nodes)
 		}
 	}
 	o.mu.RUnlock()
@@ -531,12 +594,15 @@ func (o *orchestrator) startGroupWithTrigger(groupID, onlyNodeID, trigger, sched
 		if runtime.Info != nil && runtime.Info.ManualJob.State == "running" {
 			return jobRecord{}, fmt.Errorf("%w: node %q already has a manual full compaction running", errConflict, node.Name)
 		}
+		if runtime.Info != nil && runtime.Info.Compacting {
+			return jobRecord{}, fmt.Errorf("%w: node %q is already compacting", errConflict, node.Name)
+		}
 	}
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if existing := o.running[groupID]; existing != "" {
-		return jobRecord{}, fmt.Errorf("%w: disk group already has job %s", errConflict, existing)
+	if err := o.ensureNodesAvailableLocked(groupID, nodes); err != nil {
+		return jobRecord{}, err
 	}
 	job := jobRecord{
 		ID:         newID(),
@@ -580,6 +646,28 @@ func (o *orchestrator) startGroupWithTrigger(groupID, onlyNodeID, trigger, sched
 	o.wg.Add(1)
 	go o.runJob(job.ID, nodes)
 	return cloneJob(job), nil
+}
+
+func (o *orchestrator) ensureNodesAvailableLocked(groupID string, nodes []nodeConfig) error {
+	if existing := o.running[groupID]; existing != "" {
+		return fmt.Errorf("%w: disk group already has job %s", errConflict, existing)
+	}
+	wanted := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		wanted[node.ID] = node.Name
+	}
+	for _, jobID := range o.running {
+		job := findJob(o.state.Jobs, jobID)
+		if job == nil {
+			continue
+		}
+		for _, run := range job.Nodes {
+			if name, exists := wanted[run.NodeID]; exists {
+				return fmt.Errorf("%w: node %q is already reserved by running job %s", errConflict, name, job.ID)
+			}
+		}
+	}
+	return nil
 }
 
 func (o *orchestrator) groupNodesLocked(groupID, onlyNodeID string) (diskGroup, []nodeConfig, error) {

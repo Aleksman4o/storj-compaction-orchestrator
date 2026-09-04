@@ -13,8 +13,27 @@ import (
 )
 
 const (
-	databaseSchemaVersion = 1
+	databaseSchemaVersion = 2
 )
+
+const createSchedulesTableSQL = `CREATE TABLE schedules (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	enabled INTEGER NOT NULL,
+	target_type TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	schedule_mode TEXT NOT NULL,
+	days_json TEXT NOT NULL,
+	at_time TEXT NOT NULL,
+	start_at TEXT NOT NULL,
+	interval_hours INTEGER NOT NULL,
+	position INTEGER NOT NULL,
+	last_due_key TEXT NOT NULL DEFAULT '',
+	last_attempt_at TEXT,
+	last_started_at TEXT,
+	last_job_id TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT ''
+)`
 
 type stateStore struct {
 	db   *sql.DB
@@ -102,6 +121,29 @@ func (s *stateStore) migrateSchema() error {
 	if version == databaseSchemaVersion {
 		return nil
 	}
+	if version == 1 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		for _, statement := range []string{
+			`ALTER TABLE schedules ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'weekly'`,
+			`ALTER TABLE schedules ADD COLUMN start_at TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE schedules ADD COLUMN interval_hours INTEGER NOT NULL DEFAULT 0`,
+		} {
+			if _, err := tx.Exec(statement); err != nil {
+				return fmt.Errorf("migrate sqlite schema from version 1: %w", err)
+			}
+		}
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", databaseSchemaVersion)); err != nil {
+			return fmt.Errorf("set sqlite schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit sqlite schema migration: %w", err)
+		}
+		return nil
+	}
 	if version != 0 {
 		return fmt.Errorf("cannot migrate sqlite schema version %d", version)
 	}
@@ -132,21 +174,7 @@ func (s *stateStore) migrateSchema() error {
 			position INTEGER NOT NULL
 		)`,
 		`CREATE INDEX nodes_group_position ON nodes(group_id, position)`,
-		`CREATE TABLE schedules (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			enabled INTEGER NOT NULL,
-			target_type TEXT NOT NULL,
-			target_id TEXT NOT NULL,
-			days_json TEXT NOT NULL,
-			at_time TEXT NOT NULL,
-			position INTEGER NOT NULL,
-			last_due_key TEXT NOT NULL DEFAULT '',
-			last_attempt_at TEXT,
-			last_started_at TEXT,
-			last_job_id TEXT NOT NULL DEFAULT '',
-			last_error TEXT NOT NULL DEFAULT ''
-		)`,
+		createSchedulesTableSQL,
 		`CREATE TABLE jobs (
 			seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			id TEXT NOT NULL UNIQUE,
@@ -232,7 +260,8 @@ func (s *stateStore) load() (persistedState, error) {
 		return state, err
 	}
 
-	schedules, err := s.db.Query(`SELECT id, name, enabled, target_type, target_id, days_json, at_time,
+	schedules, err := s.db.Query(`SELECT id, name, enabled, target_type, target_id, schedule_mode,
+		days_json, at_time, start_at, interval_hours,
 		last_due_key, last_attempt_at, last_started_at, last_job_id, last_error
 		FROM schedules ORDER BY position`)
 	if err != nil {
@@ -244,7 +273,8 @@ func (s *stateStore) load() (persistedState, error) {
 		var lastAttempt, lastStarted sql.NullString
 		var run scheduleRunState
 		if err := schedules.Scan(&rule.ID, &rule.Name, &rule.Enabled, &rule.TargetType, &rule.TargetID,
-			&days, &rule.At, &run.LastDueKey, &lastAttempt, &lastStarted, &run.LastJobID, &run.LastError); err != nil {
+			&rule.Mode, &days, &rule.At, &rule.StartAt, &rule.Interval, &run.LastDueKey,
+			&lastAttempt, &lastStarted, &run.LastJobID, &run.LastError); err != nil {
 			_ = schedules.Close()
 			return state, fmt.Errorf("scan schedule: %w", err)
 		}
@@ -430,10 +460,12 @@ func insertSchedule(tx *sql.Tx, rule scheduleRule, state scheduleRunState, posit
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO schedules(id, name, enabled, target_type, target_id, days_json, at_time, position,
+	_, err = tx.Exec(`INSERT INTO schedules(id, name, enabled, target_type, target_id, schedule_mode,
+		days_json, at_time, start_at, interval_hours, position,
 		last_due_key, last_attempt_at, last_started_at, last_job_id, last_error)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.ID, rule.Name, rule.Enabled, rule.TargetType,
-		rule.TargetID, string(days), rule.At, position, state.LastDueKey, databaseTime(state.LastAttemptAt),
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.ID, rule.Name, rule.Enabled, rule.TargetType,
+		rule.TargetID, rule.Mode, string(days), rule.At, rule.StartAt, rule.Interval, position,
+		state.LastDueKey, databaseTime(state.LastAttemptAt),
 		databaseTime(state.LastStartedAt), state.LastJobID, state.LastError)
 	if err != nil {
 		return fmt.Errorf("save schedule %s: %w", rule.ID, err)
