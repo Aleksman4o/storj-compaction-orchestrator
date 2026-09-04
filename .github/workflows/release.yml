@@ -90,6 +90,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with:
           path: dist
@@ -111,20 +112,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          RELEASE_NOTES: |
-            ## Проверка подлинности
-
-            Все файлы собраны GitHub Actions и имеют криптографически подписанную Sigstore build-provenance attestation.
-
-            - [GitHub Attestation](${{ steps.attest.outputs.attestation-url }})
-            - `storj-compaction-orchestrator-${{ github.ref_name }}-attestation.sigstore.json` — bundle для независимой проверки
-
-            ```bash
-            gh release verify ${{ github.ref_name }} -R Aleksman4o/storj-compaction-orchestrator
-            gh release verify-asset ${{ github.ref_name }} <downloaded-file> -R Aleksman4o/storj-compaction-orchestrator
-            ```
         run: |
           set -euo pipefail
+          notes_file=".github/release-notes/${TAG}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            echo "Missing human-written release notes: $notes_file" >&2
+            exit 1
+          fi
           if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
             if [[ "$draft" == "false" ]]; then
               echo "Release $TAG is already published"
@@ -136,8 +130,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$TAG" \
-            --generate-notes \
-            --notes "$RELEASE_NOTES"
+            --notes-file "$notes_file"
 
   docker:
     runs-on: ubuntu-24.04
