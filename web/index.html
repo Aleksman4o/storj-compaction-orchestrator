@@ -157,7 +157,7 @@
             </article>
 
             <article class="panel">
-              <div class="panel-title"><div><h2>Все ноды</h2><p>Подробное редактирование адресов и ключей. Привязку удобнее менять в карточке диска выше.</p></div><div class="list-tools"><select id="settings-node-group-filter"><option value="">Все диски</option></select><input id="settings-node-search" type="search" placeholder="Найти ноду"><button id="add-node" class="button secondary small">+ Добавить ноду</button></div></div>
+              <div class="panel-title"><div><h2>Все ноды</h2><p>Подробное редактирование адресов и ключей. Привязку удобнее менять в карточке диска выше.</p></div><div class="list-tools"><select id="settings-node-group-filter"><option value="">Все диски</option></select><input id="settings-node-search" type="search" placeholder="Найти ноду"><button id="import-nodes" class="button secondary small">Импорт</button><button id="export-nodes" class="button secondary small">Экспорт</button><button id="add-node" class="button secondary small">+ Добавить ноду</button></div></div>
               <div class="settings-node-header">
                 <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="name">Название <span>↕</span></button>
                 <button class="sort-button" data-sort-table="settingsNodes" data-sort-key="url">Адрес dashboard <span>↕</span></button>
@@ -188,6 +188,36 @@
         </div>
       </section>
     </main>
+  </div>
+  <div id="node-import-modal" class="modal-backdrop hidden">
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="node-import-title">
+      <header class="modal-head">
+        <div>
+          <h2 id="node-import-title">Импорт нод</h2>
+          <p>Ноды будут добавлены в настройки. После проверки сохраните изменения обычной кнопкой.</p>
+        </div>
+        <button class="modal-close" data-close-node-import aria-label="Закрыть">×</button>
+      </header>
+      <div class="modal-body">
+        <label class="import-format-field">
+          <span>Формат</span>
+          <select id="node-import-format">
+            <option value="lines">Строки</option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+        <label>
+          <span>Список нод</span>
+          <textarea id="node-import-input" class="node-import-input" spellcheck="false" autocomplete="off"></textarea>
+        </label>
+        <p id="node-import-help" class="modal-hint"></p>
+        <div id="node-import-error" class="modal-error hidden" role="alert"></div>
+      </div>
+      <footer class="modal-actions">
+        <button class="button ghost" data-close-node-import>Отмена</button>
+        <button id="apply-node-import" class="button primary">Добавить в настройки</button>
+      </footer>
+    </section>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/i18n.js" defer></script>

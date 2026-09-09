@@ -976,6 +976,209 @@ function addNodeToGroup(groupID) {
   queueMicrotask(() => $(`#settings-disk-detail [data-node-row="${CSS.escape(node.id)}"] [data-field="name"]`)?.focus());
 }
 
+function setNodeImportError(message = '') {
+  const element = $('#node-import-error');
+  element.textContent = message;
+  element.classList.toggle('hidden', !message);
+  if (message) queueMicrotask(() => {
+    const body = element.closest('.modal-body');
+    if (body) body.scrollTop = body.scrollHeight;
+  });
+}
+
+function updateNodeImportFormat() {
+  const format = $('#node-import-format').value;
+  const input = $('#node-import-input');
+  if (format === 'json') {
+    input.placeholder = `[
+  {
+    "name": "STORJ201",
+    "url": "http://192.168.200.201:14005",
+    "apiKey": "MULTINODE_KEY",
+    "disk": "STORJ01",
+    "enabled": true
+  }
+]`;
+    $('#node-import-help').innerHTML = tr(
+      'Принимается JSON-массив или объект с массивом <code>nodes</code>. Диск можно указать по названию в <code>disk</code> или по внутреннему <code>groupId</code>.',
+      'Use a JSON array or an object containing a <code>nodes</code> array. Set the disk by name in <code>disk</code> or by its internal <code>groupId</code>.',
+    );
+  } else {
+    input.placeholder = tr(
+      'ИМЯ URL MULTINODE_KEY ДИСК [true|false]\nSTORJ201 http://192.168.200.201:14005 ABC...= STORJ01 true',
+      'NAME URL MULTINODE_KEY DISK [true|false]\nSTORJ201 http://192.168.200.201:14005 ABC...= STORJ01 true',
+    );
+    $('#node-import-help').innerHTML = tr(
+      'Одна нода на строку, поля разделяются пробелами. Диск — его название без пробелов или ID. Последнее поле необязательно.',
+      'One node per line with space-separated fields. Disk is its name without spaces or its ID. The final field is optional.',
+    );
+  }
+  setNodeImportError();
+}
+
+function openNodeImport() {
+  if (!state.settings?.groups.length) return toast(tr('Сначала добавьте физический диск', 'Add a physical disk first'), true);
+  $('#node-import-format').value = 'lines';
+  $('#node-import-input').value = '';
+  updateNodeImportFormat();
+  $('#node-import-modal').classList.remove('hidden');
+  document.body.classList.add('modal-open');
+  queueMicrotask(() => $('#node-import-input').focus());
+}
+
+function closeNodeImport() {
+  $('#node-import-modal').classList.add('hidden');
+  $('#node-import-input').value = '';
+  document.body.classList.remove('modal-open');
+  setNodeImportError();
+}
+
+function importedNodeSource(kind, index) {
+  return kind === 'json'
+    ? tr(`JSON, элемент ${index + 1}`, `JSON item ${index + 1}`)
+    : tr(`Строка ${index + 1}`, `Line ${index + 1}`);
+}
+
+function parseImportedEnabled(value, source) {
+  if (value === undefined || value === null || value === '') return true;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on', 'enabled', 'да', 'включена'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off', 'disabled', 'нет', 'выключена'].includes(normalized)) return false;
+  throw new Error(tr(`${source}: поле enabled должно быть true или false`, `${source}: enabled must be true or false`));
+}
+
+function resolveImportedGroup(value, source) {
+  const reference = String(value ?? '').trim();
+  if (!reference) throw new Error(tr(`${source}: не указан диск`, `${source}: disk is missing`));
+  const byID = state.settings.groups.find(group => group.id === reference);
+  if (byID) return byID.id;
+  const byName = state.settings.groups.filter(group => group.name.toLowerCase() === reference.toLowerCase());
+  if (byName.length === 1) return byName[0].id;
+  if (byName.length > 1) throw new Error(tr(`${source}: название диска «${reference}» неоднозначно, используйте ID`, `${source}: disk name “${reference}” is ambiguous; use its ID`));
+  throw new Error(tr(`${source}: диск «${reference}» не найден`, `${source}: disk “${reference}” was not found`));
+}
+
+function normalizeImportedURL(value, source) {
+  const address = String(value ?? '').trim().replace(/\/+$/, '');
+  try {
+    const parsed = new URL(address);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.host || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error();
+  } catch (_) {
+    throw new Error(tr(`${source}: некорректный dashboard URL`, `${source}: invalid dashboard URL`));
+  }
+  return address;
+}
+
+function validImportedAPIKey(value) {
+  if (!/^[A-Za-z0-9_-]+={0,2}$/.test(value) || value.length % 4 !== 0) return false;
+  try {
+    return atob(value.replace(/-/g, '+').replace(/_/g, '/')).length === 32;
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeImportedNode(raw, source) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(tr(`${source}: ожидается объект ноды`, `${source}: expected a node object`));
+  const name = String(raw.name ?? '').trim();
+  if (!name) throw new Error(tr(`${source}: не указано название`, `${source}: node name is missing`));
+  const apiKey = String(raw.apiKey ?? raw.multinodeKey ?? raw.key ?? '').trim();
+  if (!apiKey) throw new Error(tr(`${source}: не указан multinode key`, `${source}: multinode key is missing`));
+  if (!validImportedAPIKey(apiKey)) throw new Error(tr(`${source}: некорректный multinode key`, `${source}: invalid multinode key`));
+  return {
+    id:id(),
+    name,
+    url:normalizeImportedURL(raw.url, source),
+    apiKey,
+    apiKeyConfigured:false,
+    groupId:resolveImportedGroup(raw.groupId ?? raw.group ?? raw.disk ?? raw.groupName, source),
+    enabled:parseImportedEnabled(raw.enabled, source),
+  };
+}
+
+function parseNodeImport() {
+  const format = $('#node-import-format').value;
+  const text = $('#node-import-input').value.trim();
+  if (!text) throw new Error(tr('Вставьте хотя бы одну ноду', 'Paste at least one node'));
+  let nodes;
+  if (format === 'json') {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (error) { throw new Error(tr(`Некорректный JSON: ${error.message}`, `Invalid JSON: ${error.message}`)); }
+    const rawNodes = Array.isArray(parsed) ? parsed : parsed?.nodes;
+    if (!Array.isArray(rawNodes)) throw new Error(tr('JSON должен быть массивом или объектом с массивом nodes', 'JSON must be an array or an object with a nodes array'));
+    nodes = rawNodes.map((node, index) => normalizeImportedNode(node, importedNodeSource(format, index)));
+  } else {
+    nodes = [];
+    text.split(/\r?\n/).forEach((rawLine, index) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) return;
+      const fields = line.split(/\s+/);
+      if (fields.length < 4 || fields.length > 5) throw new Error(tr(`Строка ${index + 1}: ожидается 4 или 5 полей`, `Line ${index + 1}: expected 4 or 5 fields`));
+      nodes.push(normalizeImportedNode(
+        {name:fields[0], url:fields[1], apiKey:fields[2], groupId:fields[3], enabled:fields[4]},
+        importedNodeSource(format, index),
+      ));
+    });
+  }
+  if (!nodes.length) throw new Error(tr('В списке нет нод', 'The list contains no nodes'));
+  const addresses = new Map(state.settings.nodes.map(node => [node.url.trim().replace(/\/+$/, '').toLowerCase(), node.name]));
+  for (const node of nodes) {
+    const normalized = node.url.toLowerCase();
+    const duplicate = addresses.get(normalized);
+    if (duplicate) throw new Error(tr(`Адрес ${node.url} уже используется нодой «${duplicate}»`, `Address ${node.url} is already used by node “${duplicate}”`));
+    addresses.set(normalized, node.name);
+  }
+  return nodes;
+}
+
+function applyNodeImport() {
+  try {
+    const nodes = parseNodeImport();
+    state.settings.nodes.push(...nodes);
+    state.selectedSettingsGroup = nodes[0].groupId;
+    state.editingNodeID = '';
+    state.filter.settingsNodes = '';
+    state.filter.settingsNodeGroup = '';
+    closeNodeImport();
+    renderSettings();
+    toast(tr(`Добавлено нод: ${nodes.length}. Проверьте и сохраните настройки.`, `Added ${nodes.length} nodes. Review and save the settings.`));
+  } catch (error) {
+    setNodeImportError(error.message);
+  }
+}
+
+function exportNodes() {
+  if (!state.settings) return;
+  const groups = new Map(state.settings.groups.map(group => [group.id, group.name]));
+  const exported = {
+    formatVersion:1,
+    exportedAt:new Date().toISOString(),
+    keysIncluded:false,
+    groups:state.settings.groups.map(group => ({...group})),
+    nodes:state.settings.nodes.map(node => ({
+      id:node.id,
+      name:node.name,
+      url:node.url,
+      apiKey:'',
+      apiKeyConfigured:Boolean(node.apiKeyConfigured),
+      groupId:node.groupId,
+      groupName:groups.get(node.groupId) || '',
+      enabled:Boolean(node.enabled),
+    })),
+  };
+  const blob = new Blob([`${JSON.stringify(exported, null, 2)}\n`], {type:'application/json'});
+  const downloadURL = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadURL;
+  link.download = `storj-compaction-nodes-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(downloadURL), 0);
+  toast(tr(`Экспортировано нод: ${exported.nodes.length}. Multinode keys не включены.`, `Exported ${exported.nodes.length} nodes. Multinode keys are not included.`));
+}
+
 function moveNodeToGroup(nodeID, groupID) {
   const index = state.settings.nodes.findIndex(node => node.id === nodeID);
   if (index < 0 || state.settings.nodes[index].groupId === groupID) return;
@@ -1083,7 +1286,8 @@ document.addEventListener('change', event => {
     renderDashboard();
     renderSettings();
     renderSchedules();
-    return applyLanguage();
+    applyLanguage();
+    return updateNodeImportFormat();
   }
   if (target.dataset.moveNode) return moveNodeToGroup(target.dataset.moveNode, target.value);
   if (target.dataset.field === 'groupId' && target.closest('[data-node-row]')) return moveNodeToGroup(target.closest('[data-node-row]').dataset.nodeRow, target.value);
@@ -1091,6 +1295,7 @@ document.addEventListener('change', event => {
 });
 
 document.addEventListener('click', event => {
+  if (event.target.id === 'node-import-modal' || event.target.closest('[data-close-node-import]')) return closeNodeImport();
   const nav = event.target.closest('[data-view]'); if (nav) return setView(nav.dataset.view);
   if (event.target.closest('[data-go-settings]')) return setView('settings');
   const groupView = event.target.closest('[data-group-view]');
@@ -1196,12 +1401,20 @@ document.addEventListener('click', event => {
 $('#refresh').addEventListener('click', () => loadDashboard());
 $('#save-settings').addEventListener('click', () => saveSettings());
 $('#save-schedules').addEventListener('click', () => saveSettings());
+$('#import-nodes').addEventListener('click', openNodeImport);
+$('#export-nodes').addEventListener('click', exportNodes);
+$('#node-import-format').addEventListener('change', updateNodeImportFormat);
+$('#apply-node-import').addEventListener('click', applyNodeImport);
 $('#add-group').addEventListener('click', () => { const group = {id:id(), name:tr('Новый диск', 'New disk')}; state.settings.groups.push(group); state.selectedSettingsGroup = group.id; state.filter.settingsGroups = ''; renderSettings(); $('#settings-disk-detail [data-field="name"]')?.select(); });
 $('#add-node').addEventListener('click', () => {
   if (!state.settings.groups.length) return toast(tr('Сначала добавьте физический диск', 'Add a physical disk first'), true);
   addNodeToGroup(state.selectedSettingsGroup || state.settings.groups[0].id);
 });
 $('#add-schedule').addEventListener('click', () => addSchedule());
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('#node-import-modal').classList.contains('hidden')) closeNodeImport();
+});
 
 const initialView = location.hash === '#settings' ? 'settings' : location.hash === '#schedule' ? 'schedule' : 'dashboard';
 applyLanguage();
