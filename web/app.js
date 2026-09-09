@@ -597,16 +597,37 @@ function nodeRow(node) {
     work = `<span class="state-pill running">${stateLabel(manual.state)}</span>${satellite}${satelliteCount}`;
   }
   const status = !node.enabled ? `<span class="status">${tr('Отключена', 'Disabled')}</span>` : node.runtime.online ? `<span class="status online">${tr('В сети', 'Online')}</span>` : `<span class="status offline" title="${esc(node.runtime.error)}">${tr('Нет связи', 'Offline')}</span>`;
-  const peers = groupNodes(node.groupId).filter(item => item.enabled);
-  const groupSafe = peers.every(item => item.runtime.online && item.runtime.info?.manualJob?.state !== 'running');
-  const disabled = !node.enabled || group?.runningJob || !groupSafe || manual?.state === 'running' || !node.runtime.online || !info?.manualLogCompactionEnabled;
+  let startLabel = tr('Запустить', 'Start');
+  let startBlocked = '';
+  if (manual?.state === 'running' || info?.compacting) {
+    startLabel = tr('Выполняется', 'Running');
+    startBlocked = tr('Compaction уже выполняется на этой ноде', 'Compaction is already running on this node');
+  } else if (!node.enabled) {
+    startBlocked = tr('Нода отключена в настройках', 'The node is disabled in settings');
+  } else if (group?.runningJob) {
+    startBlocked = tr(`Для диска ${group.name} уже запущена очередь`, `A queue is already running for disk ${group.name}`);
+  } else if (!node.runtime.online) {
+    startBlocked = tr('Нода недоступна', 'The node is offline');
+  } else if (!info?.manualLogCompactionEnabled) {
+    startBlocked = tr('Ручная compaction отключена на ноде', 'Manual compaction is disabled on the node');
+  } else {
+    const peers = groupNodes(node.groupId).filter(item => item.enabled && item.id !== node.id);
+    const unavailable = peers.find(item => !item.runtime.online);
+    const compacting = peers.find(item => item.runtime.info?.compacting || item.runtime.info?.manualJob?.state === 'running');
+    if (unavailable) {
+      startBlocked = tr(`Нода ${unavailable.name} на этом диске недоступна`, `Node ${unavailable.name} on this disk is offline`);
+    } else if (compacting) {
+      startBlocked = tr(`На ноде ${compacting.name} этого диска уже выполняется compaction`, `Compaction is already running on node ${compacting.name} on this disk`);
+    }
+  }
+  const startDisabled = Boolean(startBlocked);
   const currentRate = rewriteRate(node);
   const rateCell = Number.isFinite(currentRate?.bytesPerSecond)
     ? `<td class="metric"><strong>${rate(currentRate.bytesPerSecond)}</strong><small>${currentRate.samples.length} ${tr('из', 'of')} ${REWRITE_RATE_WINDOW} ${tr('замеров', 'samples')}</small></td>`
     : '<td class="metric"><strong>—</strong></td>';
   const failures = info?.runtimeTotals?.failedAttempts || 0;
   const logs = info?.runtimeTotals?.logsRewritten || 0;
-  return `<tr><td><div class="node-title">${esc(node.name)}</div>${nodeAddress(node.url)}</td><td>${esc(group?.name || '—')}</td><td>${status}</td><td>${work}</td><td class="metric"><strong>${bytes(info?.reclaimableBytes)}</strong><small>${info ? info.manualLogCompactionEnabled ? 'manual mode' : tr('manual mode выключен', 'manual mode disabled') : tr('нет данных', 'no data')}</small></td><td class="metric"><strong>${bytes(info?.runtimeTotals?.dataReclaimedBytes)}</strong><small>${failures} ${plural(failures, 'ошибка', 'ошибки', 'ошибок', 'error', 'errors')}</small></td><td class="metric"><strong>${bytes(info?.runtimeTotals?.dataRewrittenBytes)}</strong><small>${logs} ${plural(logs, 'лог', 'лога', 'логов', 'log', 'logs')}</small></td>${rateCell}<td><button class="button secondary small" data-start-node="${esc(node.id)}" ${disabled ? 'disabled' : ''}>${tr('Запустить', 'Start')}</button></td></tr>`;
+  return `<tr><td><div class="node-title">${esc(node.name)}</div>${nodeAddress(node.url)}</td><td>${esc(group?.name || '—')}</td><td>${status}</td><td>${work}</td><td class="metric"><strong>${bytes(info?.reclaimableBytes)}</strong><small>${info ? info.manualLogCompactionEnabled ? 'manual mode' : tr('manual mode выключен', 'manual mode disabled') : tr('нет данных', 'no data')}</small></td><td class="metric"><strong>${bytes(info?.runtimeTotals?.dataReclaimedBytes)}</strong><small>${failures} ${plural(failures, 'ошибка', 'ошибки', 'ошибок', 'error', 'errors')}</small></td><td class="metric"><strong>${bytes(info?.runtimeTotals?.dataRewrittenBytes)}</strong><small>${logs} ${plural(logs, 'лог', 'лога', 'логов', 'log', 'logs')}</small></td>${rateCell}<td title="${esc(startBlocked)}"><button class="button ${startDisabled ? 'secondary' : 'primary'} small" data-start-node="${esc(node.id)}" ${startDisabled ? 'disabled' : ''}>${esc(startLabel)}</button></td></tr>`;
 }
 
 function historyRow(job) {

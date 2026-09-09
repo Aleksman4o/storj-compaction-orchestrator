@@ -1,6 +1,18 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestCompactionEndpoint(t *testing.T) {
 	got, err := compactionEndpoint("http://127.0.0.1:14002/", "/start")
@@ -25,5 +37,20 @@ func TestValidateAPIKey(t *testing.T) {
 		if err := validateAPIKey(key); err == nil {
 			t.Fatalf("expected invalid key %q to be rejected", key)
 		}
+	}
+}
+
+func TestNodeClientGetExplainsHTMLResponse(t *testing.T) {
+	client := &nodeClient{http: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/html"}},
+			Body:       io.NopCloser(strings.NewReader("<!doctype html><title>Storj</title>")),
+			Request:    request,
+		}, nil
+	})}}
+	_, _, err := client.get(context.Background(), nodeConfig{URL: "http://node"})
+	if err == nil || !strings.Contains(err.Error(), "returned HTML instead of compaction JSON") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

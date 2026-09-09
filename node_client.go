@@ -68,8 +68,15 @@ func (c *nodeClient) get(ctx context.Context, node nodeConfig) (*compactionInfo,
 	if resp.StatusCode != http.StatusOK {
 		return nil, latency, decodeNodeError(resp)
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, latency, fmt.Errorf("read node response: %w", err)
+	}
 	var info compactionInfo
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&info); err != nil {
+	if err := json.Unmarshal(body, &info); err != nil {
+		if strings.HasPrefix(strings.TrimSpace(string(body)), "<") {
+			return nil, latency, errors.New("node returned HTML instead of compaction JSON; check the node version and dashboard address")
+		}
 		return nil, latency, fmt.Errorf("decode node response: %w", err)
 	}
 	return &info, latency, nil
